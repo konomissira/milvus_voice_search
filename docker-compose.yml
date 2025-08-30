@@ -1,0 +1,195 @@
+version: "3.5"
+
+services:
+    # Milvus stack
+    etcd:
+        container_name: milvus-etcd
+        image: quay.io/coreos/etcd:v3.5.18
+        environment:
+            - ETCD_AUTO_COMPACTION_MODE=revision
+            - ETCD_AUTO_COMPACTION_RETENTION=1000
+            - ETCD_QUOTA_BACKEND_BYTES=4294967296
+            - ETCD_SNAPSHOT_COUNT=50000
+        volumes:
+            - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/etcd:/etcd
+        command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+        healthcheck:
+            test: ["CMD", "etcdctl", "endpoint", "health"]
+            interval: 30s
+            timeout: 20s
+            retries: 3
+
+    minio:
+        container_name: milvus-minio
+        image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+        environment:
+            MINIO_ACCESS_KEY: minioadmin
+            MINIO_SECRET_KEY: minioadmin
+        ports:
+            - "9001:9001"
+            - "9000:9000"
+        volumes:
+            - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/minio:/minio_data
+        command: minio server /minio_data --console-address ":9001"
+        healthcheck:
+            test:
+                ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+            interval: 30s
+            timeout: 20s
+            retries: 3
+
+    standalone:
+        container_name: milvus-standalone
+        image: milvusdb/milvus:v2.6.0
+        command: ["milvus", "run", "standalone"]
+        security_opt:
+            - seccomp:unconfined
+        environment:
+            ETCD_ENDPOINTS: etcd:2379
+            MINIO_ADDRESS: minio:9000
+            MQ_TYPE: woodpecker
+        volumes:
+            - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/milvus:/var/lib/milvus
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+            interval: 30s
+            start_period: 90s
+            timeout: 20s
+            retries: 3
+        ports:
+            - "19530:19530" # Milvus gRPC
+            - "9091:9091" # Milvus HTTP/metrics
+        depends_on:
+            - "etcd"
+            - "minio"
+
+    # App PostgreSQL (metadata DB)
+    app-postgres:
+        container_name: app-postgres
+        image: postgres:15-alpine
+        environment:
+            POSTGRES_DB: ${APP_PG_DB}
+            POSTGRES_USER: ${APP_PG_USER}
+            POSTGRES_PASSWORD: ${APP_PG_PASSWORD}
+        ports:
+            - "5432:5432"
+        volumes:
+            - ./volumes/pgdata:/var/lib/postgresql/data
+            - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U postgres -d voice"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    # Airflow
+    airflow-redis:
+        image: redis:7-alpine
+        container_name: airflow-redis
+        healthcheck:
+            test: ["CMD", "redis-cli", "ping"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    airflow-db:
+        image: postgres:13
+        container_name: airflow-db
+        environment:
+            POSTGRES_USER: ${AIRFLOW_DB_USER}
+            POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+            POSTGRES_DB: ${AIRFLOW_DB_NAME}
+        volumes:
+            - ./volumes/airflow-db:/var/lib/postgresql/data
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    airflow-init:
+        image: apache/airflow:2.9.3
+        container_name: airflow-init
+        entrypoint: /bin/bash
+        command:
+            - -c
+            - |
+                mkdir -p /sources/logs /sources/dags /sources/plugins
+                chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+                airflow db init
+                airflow users create \
+                  --username "$AIRFLOW_ADMIN_USERNAME" \
+                  --firstname Admin \
+                  --lastname User \
+                  --role Admin \
+                  --email "$AIRFLOW_ADMIN_EMAIL" \
+                  --password "$AIRFLOW_ADMIN_PASSWORD"
+        environment:
+            AIRFLOW__CORE__EXECUTOR: LocalExecutor
+            AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-db/${AIRFLOW_DB_NAME}
+            AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+            AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+            _AIRFLOW_DB_UPGRADE: "true"
+            _AIRFLOW_WWW_USER_CREATE: "true"
+            AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME}
+            AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+            AIRFLOW_ADMIN_EMAIL: ${AIRFLOW_ADMIN_EMAIL}
+            AIRFLOW_UID: "${AIRFLOW_UID:-50000}"
+        volumes:
+            - ./airflow/dags:/sources/dags
+            - ./airflow/logs:/sources/logs
+            - ./airflow/plugins:/sources/plugins
+        depends_on:
+            airflow-db:
+                condition: service_healthy
+
+    airflow-webserver:
+        image: apache/airflow:2.9.3
+        container_name: airflow-webserver
+        command: webserver
+        environment:
+            AIRFLOW__CORE__EXECUTOR: LocalExecutor
+            AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-db/${AIRFLOW_DB_NAME}
+            AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+            AIRFLOW_UID: "${AIRFLOW_UID:-50000}"
+        volumes:
+            - ./airflow/dags:/opt/airflow/dags
+            - ./airflow/logs:/opt/airflow/logs
+            - ./airflow/plugins:/opt/airflow/plugins
+        ports:
+            - "8080:8080"
+        healthcheck:
+            test:
+                ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+            interval: 20s
+            timeout: 10s
+            retries: 5
+        depends_on:
+            airflow-db:
+                condition: service_healthy
+            airflow-init:
+                condition: service_completed_successfully
+
+    airflow-scheduler:
+        image: apache/airflow:2.9.3
+        container_name: airflow-scheduler
+        command: scheduler
+        environment:
+            AIRFLOW__CORE__EXECUTOR: LocalExecutor
+            AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-db/${AIRFLOW_DB_NAME}
+            AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+            AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+            AIRFLOW_UID: "${AIRFLOW_UID:-50000}"
+        volumes:
+            - ./airflow/dags:/opt/airflow/dags
+            - ./airflow/logs:/opt/airflow/logs
+            - ./airflow/plugins:/opt/airflow/plugins
+        depends_on:
+            airflow-db:
+                condition: service_healthy
+            airflow-init:
+                condition: service_completed_successfully
+
+networks:
+    default:
+        name: milvus
