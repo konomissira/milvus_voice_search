@@ -1,7 +1,7 @@
 .venv/
 
 .DS_Store
-
+__init__.py
 __pycache__/
 
 volumes/pgdata/
@@ -19,3 +19,5 @@ airflow/logs/
 
 .vscode/
 .idea/
+
+data/
