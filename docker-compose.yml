@@ -108,51 +108,80 @@ services:
             retries: 5
 
     airflow-init:
-        image: apache/airflow:2.9.3
+        build:
+            context: ./docker/airflow
+            dockerfile: Dockerfile
+        image: local/airflow:2.9.3-ml
         container_name: airflow-init
+        user: "0"
         entrypoint: /bin/bash
-        command:
-            - -c
-            - |
-                mkdir -p /sources/logs /sources/dags /sources/plugins
-                chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
-                airflow db init
-                airflow users create \
-                  --username "$AIRFLOW_ADMIN_USERNAME" \
-                  --firstname Admin \
-                  --lastname User \
-                  --role Admin \
-                  --email "$AIRFLOW_ADMIN_EMAIL" \
-                  --password "$AIRFLOW_ADMIN_PASSWORD"
         environment:
+            MILVUS_HOST: standalone
+            MILVUS_PORT: "19530"
+
             AIRFLOW__CORE__EXECUTOR: LocalExecutor
             AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-db/${AIRFLOW_DB_NAME}
             AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
             AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+            AIRFLOW__CORE__LOAD_EXAMPLES: "False"
             _AIRFLOW_DB_UPGRADE: "true"
             _AIRFLOW_WWW_USER_CREATE: "true"
             AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME}
             AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
             AIRFLOW_ADMIN_EMAIL: ${AIRFLOW_ADMIN_EMAIL}
             AIRFLOW_UID: "${AIRFLOW_UID:-50000}"
+
+            # new: let Airflow import your src/* and find data/*
+            PYTHONPATH: /opt/airflow
+            DATA_DIR: /opt/airflow/data
+        command:
+            - -c
+            - |
+                set -e
+                mkdir -p /opt/airflow/{logs,dags,plugins}
+                chown -R "${AIRFLOW_UID}:0" /opt/airflow/{logs,dags,plugins}
+                airflow db init
+                airflow users create \
+                    --username "$AIRFLOW_ADMIN_USERNAME" \
+                    --firstname Admin \
+                    --lastname User \
+                    --role Admin \
+                    --email "$AIRFLOW_ADMIN_EMAIL" \
+                    --password "$AIRFLOW_ADMIN_PASSWORD"
         volumes:
-            - ./airflow/dags:/sources/dags
-            - ./airflow/logs:/sources/logs
-            - ./airflow/plugins:/sources/plugins
+            - ./airflow/dags:/opt/airflow/dags
+            - ./airflow/logs:/opt/airflow/logs
+            - ./airflow/plugins:/opt/airflow/plugins
+            # new mounts to map data and src folders
+            - ./src:/opt/airflow/src
+            - ./data:/opt/airflow/data
         depends_on:
             airflow-db:
                 condition: service_healthy
 
     airflow-webserver:
-        image: apache/airflow:2.9.3
+        build:
+            context: ./docker/airflow
+            dockerfile: Dockerfile
+        image: local/airflow:2.9.3-ml
         container_name: airflow-webserver
         command: webserver
         environment:
+            MILVUS_HOST: standalone
+            MILVUS_PORT: "19530"
+
             AIRFLOW__CORE__EXECUTOR: LocalExecutor
             AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-db/${AIRFLOW_DB_NAME}
             AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+            AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
             AIRFLOW_UID: "${AIRFLOW_UID:-50000}"
-            APP_PG_HOST: ${APP_PG_HOST}
+
+            # new: DAGs can import src.*, and ASR reads data/
+            PYTHONPATH: /opt/airflow
+            DATA_DIR: /opt/airflow/data
+
+            #  expose APP_PG_* to tasks
+            APP_PG_HOST: ${APP_PG_HOST:-app-postgres}
             APP_PG_DB: ${APP_PG_DB}
             APP_PG_USER: ${APP_PG_USER}
             APP_PG_PASSWORD: ${APP_PG_PASSWORD}
@@ -160,6 +189,9 @@ services:
             - ./airflow/dags:/opt/airflow/dags
             - ./airflow/logs:/opt/airflow/logs
             - ./airflow/plugins:/opt/airflow/plugins
+            # new mounts to map folders: src and data
+            - ./src:/opt/airflow/src
+            - ./data:/opt/airflow/data
         ports:
             - "8080:8080"
         healthcheck:
@@ -173,18 +205,33 @@ services:
                 condition: service_healthy
             airflow-init:
                 condition: service_completed_successfully
+            app-postgres:
+                condition: service_started
+            standalone:
+                condition: service_started
 
     airflow-scheduler:
-        image: apache/airflow:2.9.3
+        build:
+            context: ./docker/airflow
+            dockerfile: Dockerfile
+        image: local/airflow:2.9.3-ml
         container_name: airflow-scheduler
         command: scheduler
         environment:
+            MILVUS_HOST: standalone
+            MILVUS_PORT: "19530"
+
             AIRFLOW__CORE__EXECUTOR: LocalExecutor
             AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-db/${AIRFLOW_DB_NAME}
             AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
             AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
             AIRFLOW_UID: "${AIRFLOW_UID:-50000}"
-            APP_PG_HOST: ${APP_PG_HOST}
+
+            PYTHONPATH: /opt/airflow
+            DATA_DIR: /opt/airflow/data
+
+            # pass app DB creds to tasks
+            APP_PG_HOST: ${APP_PG_HOST:-app-postgres}
             APP_PG_DB: ${APP_PG_DB}
             APP_PG_USER: ${APP_PG_USER}
             APP_PG_PASSWORD: ${APP_PG_PASSWORD}
@@ -192,11 +239,18 @@ services:
             - ./airflow/dags:/opt/airflow/dags
             - ./airflow/logs:/opt/airflow/logs
             - ./airflow/plugins:/opt/airflow/plugins
+            # new mounts to map src and data folders
+            - ./src:/opt/airflow/src
+            - ./data:/opt/airflow/data
         depends_on:
             airflow-db:
                 condition: service_healthy
             airflow-init:
                 condition: service_completed_successfully
+            app-postgres:
+                condition: service_started
+            standalone:
+                condition: service_started
 
 networks:
     default:
