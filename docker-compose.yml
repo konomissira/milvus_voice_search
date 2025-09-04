@@ -252,6 +252,37 @@ services:
             standalone:
                 condition: service_started
 
+    api:
+        build:
+            context: ./api
+            dockerfile: Dockerfile
+        image: local/voice-search-api:latest
+        container_name: voice-search-api
+        environment:
+            # Milvus in Docker
+            MILVUS_HOST: standalone
+            MILVUS_PORT: "19530"
+            MILVUS_COLLECTION: call_embeddings
+
+            # Postgres (app DB)
+            APP_PG_HOST: ${APP_PG_HOST}
+            APP_PG_DB: ${APP_PG_DB}
+            APP_PG_USER: ${APP_PG_USER}
+            APP_PG_PASSWORD: ${APP_PG_PASSWORD}
+
+            # Optional: let API import to shared helpers
+            PYTHONPATH: /opt/airflow:/opt/airflow/src
+        volumes:
+            # Mount your project root so /src is available
+            - ./src:/opt/airflow/src:ro
+        ports:
+            - "8000:8000"
+        depends_on:
+            app-postgres:
+                condition: service_started
+            standalone:
+                condition: service_started
+
 networks:
     default:
         name: milvus
