@@ -275,6 +275,7 @@ services:
         volumes:
             # Mount your project root so /src is available
             - ./src:/opt/airflow/src:ro
+            - ./data:/opt/airflow/data:ro # Mount data folder so API can serve audio files
         ports:
             - "8000:8000"
         depends_on:
@@ -282,6 +283,19 @@ services:
                 condition: service_started
             standalone:
                 condition: service_started
+
+    streamlit-ui:
+        build:
+            context: ./app
+            dockerfile: Dockerfile
+        image: local/voice-search-ui:latest
+        container_name: voice-search-ui
+        environment:
+            API_BASE: http://api:8000 # talk to FastAPI container
+        ports:
+            - "8501:8501"
+        depends_on:
+            - api
 
 networks:
     default:

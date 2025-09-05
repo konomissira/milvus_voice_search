@@ -8,6 +8,8 @@ from src.embed import get_embedding  # re-use the existing helper
 
 from fastapi import HTTPException
 
+from fastapi.staticfiles import StaticFiles
+
 MILVUS_HOST = os.getenv("MILVUS_HOST", "127.0.0.1")
 MILVUS_PORT = os.getenv("MILVUS_PORT", "19530")
 COLLECTION_NAME = os.getenv("MILVUS_COLLECTION", "call_embeddings")
@@ -18,6 +20,18 @@ PG_USER = os.getenv("APP_PG_USER", "postgres")
 PG_PASSWORD = os.getenv("APP_PG_PASSWORD")
 
 app = FastAPI(title="Voice Search API", version="1.0.0")
+
+DATA_DIR = os.getenv("DATA_DIR", "/opt/airflow/data")
+app.mount("/media", StaticFiles(directory=DATA_DIR), name="media")
+
+def _public_audio_url(file_uri: str | None) -> str | None:
+    if not file_uri:
+        return None
+    prefix = f"{DATA_DIR}/"
+    if file_uri.startswith(prefix):
+        # expose as /media/raw_calls/...
+        return "/media/" + file_uri[len(prefix):]
+    return None
 
 # Allow local dev tools (Swagger/localhost)
 app.add_middleware(
@@ -132,6 +146,7 @@ def search(query: str, top_k: int = 5, customer_id: str | None = None):
                 "started_at": m.get("started_at"),
                 "duration_sec": m.get("duration_sec"),
                 "file_uri": m.get("file_uri"),
+                "audio_url": _public_audio_url(m.get("file_uri")),
                 "summary": m.get("summary"),
                 "sentiment": m.get("sentiment"),
             })
