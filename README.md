@@ -13,7 +13,7 @@ This project demonstrates how a Data Engineer can design, orchestrate, and expos
 
 ## 🏗️ Architecture
 
-![Architecture Diagram](docs/architecture_diagram.jpg)
+![Architecture Diagram](docs/app_architecture.jpg)
 
 -   **Postgres** → Stores transcripts & metadata (`calls` table).
 -   **Milvus** → Stores high-dimensional embeddings (`call_embeddings` collection).
