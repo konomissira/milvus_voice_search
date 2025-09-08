@@ -1,12 +1,17 @@
 import requests
 import streamlit as st
+import os
 
 st.set_page_config(page_title="Voice Call Search", page_icon="🔎", layout="centered")
 st.title("🔎 Call Search (Semantic)")
 
-API_BASE = st.secrets.get("API_BASE", "http://localhost:8000")
+# Server-side base for the Streamlit container to call the API
+API_BASE = os.getenv("API_BASE") or st.secrets.get("API_BASE", "http://localhost:8000")
 
-q = st.text_input("Search calls by meaning", "refund for leaking coffee machine")
+# Public base for the user's browser to fetch audio from the host
+PUBLIC_API_BASE = os.getenv("PUBLIC_API_BASE") or st.secrets.get("PUBLIC_API_BASE", "http://localhost:8000")
+
+q = st.text_input("Search calls by meaning", "e.g. customer asking for refund or product issue")
 top_k = st.number_input("Top K", min_value=1, max_value=20, value=5, step=1)
 
 if st.button("Search"):
@@ -37,5 +42,5 @@ if st.button("Search"):
 
         # Play audio if available
         if item.get("audio_url"):
-            st.audio(f"{API_BASE}{item['audio_url']}")
+            st.audio(f"{PUBLIC_API_BASE}{item['audio_url']}")
         st.divider()
