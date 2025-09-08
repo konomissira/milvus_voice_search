@@ -291,7 +291,8 @@ services:
         image: local/voice-search-ui:latest
         container_name: voice-search-ui
         environment:
-            API_BASE: http://api:8000 # talk to FastAPI container
+            API_BASE: http://api:8000 # for Streamlit server to call API
+            PUBLIC_API_BASE: http://localhost:8000 # for the browser to fetch audio
         ports:
             - "8501:8501"
         depends_on:
