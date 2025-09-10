@@ -177,7 +177,7 @@ You must create or add your own audio files (.wav) locally before running the pi
 
 ```bash
 git clone https://github.com/konomissira/milvus_voice_search.git
-cd cd milvus_voice_search
+cd milvus_voice_search
 ```
 
 ### 1. Create a virtual environment
